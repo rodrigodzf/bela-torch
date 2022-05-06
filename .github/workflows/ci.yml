@@ -31,7 +31,7 @@ jobs:
           docker buildx build \
             --platform=linux/arm/v7 \
             --progress=plain \
-            --output type=local,dest=./wheels \
+            --output type=local,dest=./pytorch-install \
             --file Dockerfile.bela .
 
       - name: Move cache
@@ -39,6 +39,12 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+        name: pytorch-install
+        path: |
+          pytorch-install/*.tar.gz
 
 
 

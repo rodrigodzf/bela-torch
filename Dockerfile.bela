@@ -1,0 +1,223 @@
+# ##################################################################################
+# Setup Nvidia CUDA for Jetson
+# ##################################################################################
+FROM debian:bullseye as devel
+
+# Accept default answers for everything
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Fix CUDA info
+ARG DPKG_STATUS
+
+
+RUN echo "$DPKG_STATUS" >> /var/lib/dpkg/status \
+    && echo "[Builder] Installing Prerequisites" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends wget tar
+
+
+
+
+# Update environment
+RUN ln -fs /usr/share/zoneinfo/Europe/London /etc/localtime
+
+
+# ##################################################################################
+# Create PyTorch Docker Layer
+# We do this seperately since else we need to keep rebuilding
+# ##################################################################################
+FROM --platform=$BUILDPLATFORM debian:bullseye as downloader-pytorch
+
+# Configuration Arguments
+# https://github.com/pytorch/pytorch
+# ARG V_PYTORCH=v1.11.0
+ARG V_PYTORCH=master
+# https://github.com/pytorch/vision
+ARG V_PYTORCHVISION=v0.11.1
+# https://github.com/pytorch/audio
+ARG V_PYTORCHAUDIO=v0.10.0
+
+# Install Git Tools
+RUN apt update \
+    && apt install -y git \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt clean
+
+# Accept default answers for everything
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Clone Source
+RUN git clone --recursive --branch ${V_PYTORCH} http://github.com/pytorch/pytorch
+
+
+# ##################################################################################
+# Build PyTorch for Jetson (with CUDA)
+# ##################################################################################
+FROM devel as builder
+
+# Configuration Arguments
+ARG V_PYTHON_MAJOR=3
+ARG V_PYTHON_MINOR=9
+
+ENV V_PYTHON=${V_PYTHON_MAJOR}.${V_PYTHON_MINOR}
+
+# Accept default answers for everything
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Download Common Software
+RUN apt update \
+    && apt install -y \
+    libatomic1 \
+    libgflags-dev \
+    libgoogle-glog-dev \
+    libprotobuf-dev \
+    ninja-build \
+    protobuf-compiler \
+    libatlas-base-dev \
+    cmake \
+    ccache
+
+# Install pip3 stuff
+# RUN pip3 install hypothesis typing-extensions cython pyyaml
+
+# ##################################################################################
+# Download patched gcc
+# ##################################################################################
+RUN wget --no-check-certificate "https://downloads.sourceforge.net/project/raspberry-pi-cross-compilers/Raspberry%20Pi%20GCC%20Native-Compiler%20Toolchains/Bullseye/GCC%2010.3.0/Raspberry%20Pi%202%2C%203/native-gcc-10.3.0-pi_2-3.tar.gz"
+
+
+RUN tar -xf native-gcc-10.3.0-pi_2-3.tar.gz --directory /opt/
+
+# RUN ls /usr/include
+# RUN ln -sf /usr/include/arm-linux-gnueabihf/asm/* /usr/include/asm && \
+# RUN ln -sf /usr/include/arm-linux-gnueabihf/gnu/* /usr/include/gnu && \
+#     ln -sf /usr/include/arm-linux-gnueabihf/bits/* /usr/include/bits && \
+#     ln -sf /usr/include/arm-linux-gnueabihf/sys/* /usr/include/sys && \
+#     ln -sf /usr/lib/arm-linux-gnueabihf/crtn.o /usr/lib/crtn.o && \
+#     ln -sf /usr/lib/arm-linux-gnueabihf/crt1.o /usr/lib/crt1.o && \
+#     ln -sf /usr/lib/arm-linux-gnueabihf/crti.o /usr/lib/crti.o
+# ##################################################################################
+
+# Setting up Python 3.9
+WORKDIR /install
+
+# RUN apt-get install gcc-multilib
+RUN apt install -y build-essential gawk gcc g++ gfortran git texinfo bison  wget bzip2 libncurses-dev libssl-dev openssl zlib1g-dev
+
+RUN mkdir /usr/include/asm && \
+    mkdir /usr/include/gnu && \
+    mkdir /usr/include/bits && \
+    mkdir /usr/include/sys
+
+RUN cp -r /usr/include/arm-linux-gnueabihf/asm/* /usr/include/asm/ && \
+    cp -r /usr/include/arm-linux-gnueabihf/gnu/* /usr/include/gnu/ && \
+    cp -r /usr/include/arm-linux-gnueabihf/bits/* /usr/include/bits/ && \
+    cp -r /usr/include/arm-linux-gnueabihf/sys/* /usr/include/sys/
+
+RUN ln -sf /usr/lib/arm-linux-gnueabihf/crtn.o /usr/lib/crtn.o && \
+    ln -sf /usr/lib/arm-linux-gnueabihf/crt1.o /usr/lib/crt1.o && \
+    ln -sf /usr/lib/arm-linux-gnueabihf/crti.o /usr/lib/crti.o
+
+RUN apt-get update \
+    && apt-get install -y curl python${V_PYTHON} python${V_PYTHON}-dev python${V_PYTHON}-distutils python${V_PYTHON_MAJOR}-dev \
+    && ln -s $(which python${V_PYTHON}) /usr/bin/python \
+    && curl --silent --show-error https://bootstrap.pypa.io/get-pip.py | python \
+    && pip3 install setuptools==59.5.0 
+    # && ln -s $(which python${V_PYTHON}) /usr/bin/python${V_PYTHON_MAJOR} \
+
+    # && rm /usr/bin/python \
+    # && rm /usr/bin/python${V_PYTHON_MAJOR} \
+
+# PyTorch - Build - Source Code Setup 
+# copy everything from the downloader-pytorch layer /torch to /torch on this one
+COPY --from=downloader-pytorch /pytorch /pytorch
+WORKDIR /pytorch
+
+# PyTorch - Build - Prerequisites
+# Set clang as compiler
+# clang supports the ARM NEON registers
+# GNU GCC will give "no expression error"
+ARG ARMCC_PREFIX=/opt/native-pi-gcc-10.3.0-1
+ARG ARMCC_FLAGS="-march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -mfp16-format=ieee -Wno-error=format"
+
+ARG CC=${ARMCC_PREFIX}/bin/gcc-10.3.0
+ARG CXX=${ARMCC_PREFIX}/bin/g++-10.3.0
+
+ARG C_FLAGS=${ARMCC_FLAGS}
+ARG CXX_FLAGS=${ARMCC_FLAGS}
+
+# Set path to ccache
+ARG PATH=/usr/lib/ccache:${ARMCC_PREFIX}/bin:$PATH
+ARG LD_LIBRARY_PATH=${ARMCC_PREFIX}/lib:$LD_LIBRARY_PATH
+ARG ARCH=x86
+
+# Other arguments
+# ARG USE_CUDA=OFF
+# ARG USE_CUDNN=OFF
+# ARG USE_MKLDNN=0
+
+# # ARG USE_NNPACK=1
+# ARG USE_XNNPACK=1
+# ARG USE_QNNPACK=1
+# ARG USE_DISTRIBUTED=OFF
+# ARG BUILD_TEST=0
+
+# ARG USE_FBGEMM=0
+# ARG USE_OPENMP=0
+# ARG USE_BREAKPAD=0
+# ARG USE_OPENCV=0
+# ARG USE_NCCL=0
+# ARG USE_METAL=0
+# ARG BUILD_PYTHON=OFF
+# ARG DUSE_NUMPY=0
+# ARG USE_KINETO=OFF
+
+# ARG Python_EXECUTABLE=/usr/bin/python
+
+# RUN apt install -y ninja-build
+RUN pip3 install hypothesis typing-extensions cython wheel pyyaml
+# RUN cd third_party/XNNPACK/ && git checkout master && cd ../../
+# Build
+# RUN cd /pytorch \
+#     && rm build/CMakeCache.txt || : \
+#     && pip install -r requirements.txt \
+#     && python setup.py bdist_wheel \
+#     && cd ..
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+RUN cmake . -B build -GNinja \
+    -DCMAKE_C_COMPILER=${ARMCC_PREFIX}/bin/gcc-10.3.0 \
+    -DCMAKE_CXX_COMPILER=${ARMCC_PREFIX}/bin/g++-10.3.0 \
+    -DCMAKE_VERBOSE_MAKEFILE=0 \
+    -DCMAKE_C_FLAGS="${ARMCC_FLAGS}" \
+    -DCMAKE_CXX_FLAGS="${ARMCC_FLAGS}" \
+    -DCAFFE2_CPU_FLAGS="-march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon" \
+    -DCMAKE_INSTALL_PREFIX:PATH=pytorch-install ../pytorch \
+    -DPYTHON_INCLUDE_DIR=$(python -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())")  \
+    -DPYTHON_LIBRARY=$(python -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))") \
+    -DPYTHON_EXECUTABLE:FILEPATH=`which python` \
+    -DUSE_CUDA=OFF \
+    -DUSE_CUDNN=OFF \
+    -DUSE_MKLDNN=0 \
+    -DUSE_XNNPACK=1 \
+    -DUSE_QNNPACK=1 \
+    -DUSE_DISTRIBUTED=OFF \
+    -DBUILD_TEST=0 \
+    -DUSE_FBGEMM=0 \
+    -DUSE_OPENMP=0 \
+    -DUSE_BREAKPAD=0 \
+    -DUSE_OPENCV=0 \
+    -DUSE_NCCL=0 \
+    -DUSE_METAL=0 \
+    -DBUILD_PYTHON=OFF \
+    -DUSE_NUMPY=0 \
+    -DUSE_KINETO=OFF
+
+RUN cmake --build build --target install
+RUN tar -czvf /pytorch/build/pytorch-install.tar.gz /pytorch/build/pytorch-install
+
+# ##################################################################################
+# Prepare Artifact
+# ##################################################################################
+FROM scratch as artifact
+COPY --from=builder /pytorch/build/pytorch-install.tar.gz /
