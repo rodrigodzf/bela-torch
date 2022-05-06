@@ -42,9 +42,9 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v2
         with:
-        name: pytorch-install
-        path: |
-          pytorch-install/*.tar.gz
+          name: pytorch-install
+          path: |
+            pytorch-install/*.tar.gz
 
 
 
