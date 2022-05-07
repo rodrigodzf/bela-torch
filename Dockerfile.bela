@@ -211,7 +211,9 @@ RUN cmake . -B build -GNinja \
     -DUSE_METAL=0 \
     -DBUILD_PYTHON=OFF \
     -DUSE_NUMPY=0 \
-    -DUSE_KINETO=OFF
+    -DUSE_KINETO=OFF \
+    -DONNX_ML=OFF \
+    -DUSE_LITE_INTERPRETER_PROFILER=OFF
 
 RUN cmake --build build --target install
 RUN tar -czvf /pytorch/build/pytorch-install.tar.gz /pytorch/build/pytorch-install
